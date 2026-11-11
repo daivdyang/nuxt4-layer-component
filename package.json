@@ -1,0 +1,33 @@
+{
+  "name": "nuxt_component",
+  "version": "1.0.0",
+  "description": "",
+  "main": "./nuxt.config.ts",
+  "files": [
+    "app",
+    "server",
+    "shared",
+    "i18n",
+    "nuxt.config.ts",
+    "app.config.ts"
+  ],
+  "scripts": {
+    "dev": "nuxt dev .playground",
+    "build": "nuxt build .playground",
+    "generate": "nuxt generate .playground",
+    "postinstall": "nuxt prepare .playground",
+    "typecheck": "nuxt typecheck"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "peerDependencies": {
+    "nuxt": "^4.6.4"
+  },
+  "devDependencies": {
+    "nuxt": "^4.6.4",
+    "typescript": "^6.0.3",
+    "vue-tsc": "^3.3.14"
+  }
+}
