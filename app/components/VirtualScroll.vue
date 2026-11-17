@@ -30,6 +30,11 @@
       </div>
     </div>
 
+    <!-- 列表尾端（載入中、沒有更多、重試等）；位於 phantom 之後，不影響項目位置計算 -->
+    <div v-if="$slots.footer" class="virtual-scroll__footer">
+      <slot name="footer" />
+    </div>
+
     <div v-if="!items.length" class="virtual-scroll__empty">
       <slot name="empty">暫無資料</slot>
     </div>
@@ -86,6 +91,7 @@ const emit = defineEmits<{
 defineSlots<{
   default(props: { item: T; index: number }): unknown
   empty?(): unknown
+  footer?(): unknown
 }>()
 
 /* ------------------------------------------------------------------ */
@@ -283,8 +289,17 @@ function onScroll() {
   const { start, end } = range.value
   emit('scroll', { scrollTop: top, start, end })
 
+  checkBottom()
+}
+
+/** 接近底部時發出 reach-bottom；以 bottomEmitted 閂鎖，離開閾值後才會再次觸發 */
+function checkBottom() {
+  const el = containerRef.value
+  if (!el || !keys.length) return
+  const max = Math.max(0, el.scrollHeight - el.clientHeight)
+  const top = Math.min(Math.max(el.scrollTop, 0), max)
   const nearBottom = max - top <= props.bottomThreshold
-  if (nearBottom && !bottomEmitted && keys.length) {
+  if (nearBottom && !bottomEmitted) {
     bottomEmitted = true
     emit('reach-bottom')
   } else if (!nearBottom) {
@@ -361,7 +376,11 @@ watch(
     syncItems()
     rebuildFrom(0)
     bottomEmitted = false
-    nextTick(syncFromDom) // 資料縮短時瀏覽器會自動夾住 scrollTop，這裡同步回來
+    nextTick(() => {
+      syncFromDom() // 資料縮短時瀏覽器會自動夾住 scrollTop，這裡同步回來
+      // 資料不足以填滿容器時不會有 scroll 事件，這裡主動檢查，讓父層繼續載入
+      checkBottom()
+    })
   },
   { immediate: true },
 )
@@ -381,6 +400,14 @@ onMounted(() => {
   const el = containerRef.value
   if (!el) return
   syncFromDom()
+  // 容器高度等於內容高度，代表高度是被內容撐開的：容器不會捲動，虛擬化也會失效
+  if (import.meta.dev && keys.length && Math.abs(el.clientHeight - totalHeight.value) < 1) {
+    console.warn(
+      '[VirtualScroll] 容器沒有固定高度，高度被內容撐開，因此無法捲動。' +
+        '請傳入 height（例如 "400px"），或讓父層有明確高度（flex 版面需加 min-height: 0）。',
+      el,
+    )
+  }
   if (canObserve) {
     // 手機旋轉、虛擬鍵盤、父層尺寸變動
     containerObserver = new ResizeObserver(() => {
@@ -425,6 +452,10 @@ defineExpose({ scrollToIndex, scrollToOffset, scrollToTop, refresh })
 .virtual-scroll__item {
   box-sizing: border-box;
   display: flow-root; /* 防止子元素 margin 溢出，確保量測高度正確 */
+}
+
+.virtual-scroll__footer {
+  display: flow-root;
 }
 
 .virtual-scroll__empty {

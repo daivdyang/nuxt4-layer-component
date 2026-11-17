@@ -32,28 +32,108 @@
 
 ### 使用方式
 
+容器一定要有明確的高度，可以直接傳 `height`，或放進 flex 版面由父層分配高度（見下方「注意事項」）。
+
 ```vue
-<!-- 固定高度 -->
+<!-- 固定高度：直接指定容器高度 -->
 <VirtualScroll :items="list" :item-height="56" height="100dvh">
   <template #default="{ item }">
-    <div class="h-full px-4 flex items-center">{{ item.name }}</div>
+    <div class="row">{{ item.name }}</div>
   </template>
 </VirtualScroll>
 
-<!-- 動態高度 + 無限載入 -->
-<VirtualScroll
-  ref="vs"
-  :items="messages"
-  :estimated-item-height="80"
-  item-key="id"
-  @reach-bottom="loadMore"
->
-  <template #default="{ item }"><ChatBubble :msg="item" /></template>
-  <template #empty>還沒有任何訊息</template>
-</VirtualScroll>
+<!-- 動態高度 + 無限載入：flex 版面吃掉剩餘空間 -->
+<div class="page">
+  <h2>訊息</h2>
+  <VirtualScroll
+    ref="vs"
+    class="page__list"
+    :items="messages"
+    :estimated-item-height="80"
+    item-key="id"
+    @reach-bottom="loadMore"
+  >
+    <template #default="{ item }"><ChatBubble :msg="item" /></template>
+    <template #empty>還沒有任何訊息</template>
+    <template v-if="messages.length" #footer>
+      <div class="status">{{ loading ? '載入中…' : hasMore ? '' : '沒有更多了' }}</div>
+    </template>
+  </VirtualScroll>
+</div>
+
+<style scoped>
+.page {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+.page__list {
+  flex: 1;
+  min-height: 0; /* 少了這行，flex 子項會被內容撐開而無法捲動 */
+}
+</style>
 ```
 
-對外暴露的方法有 `scrollToIndex(i, { align, behavior })`、`scrollToOffset`、`scrollToTop`、`refresh(clearCache?)`。
+**對外介面**
+
+| 類別 | 名稱 | 說明 |
+| --- | --- | --- |
+| 方法 | `scrollToIndex(i, { align, behavior })` | 捲到第 i 項，`align` 為 `start` / `center` / `end` |
+| 方法 | `scrollToOffset(px, behavior?)`、`scrollToTop(behavior?)` | 捲到指定位置或頂部 |
+| 方法 | `refresh(clearCache?)` | 手動重算；`true` 會丟棄已量測高度 |
+| 事件 | `scroll` | `{ scrollTop, start, end }` |
+| 事件 | `reach-bottom` | 距離底部 `bottomThreshold` px 內時觸發一次 |
+| Slot | `default` | `{ item, index }`，渲染單一項目 |
+| Slot | `empty` | `items` 為空時顯示 |
+| Slot | `footer` | 列表尾端，例如載入中、沒有更多、重試按鈕 |
+
+### 分頁載入（動態加載資料）
+
+元件只負責發出 `reach-bottom`，分頁狀態由父層管理。父層需要自己處理三件事：防止重複請求、到底就停、失敗可重試。
+
+```ts
+const messages = ref<ChatMessage[]>([])
+const loading = ref(false)
+const hasMore = ref(true)
+const error = ref<string | null>(null)
+let nextPage = 0
+
+async function loadMore() {
+  // reach-bottom 可能在請求回來前再次觸發
+  if (loading.value || !hasMore.value) return
+  loading.value = true
+  error.value = null
+  try {
+    const res = await api.fetchPage(nextPage)
+    messages.value.push(...res.items)
+    hasMore.value = res.hasMore
+    nextPage++ // 成功才前進，失敗時重試同一頁
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    loading.value = false
+  }
+}
+
+// 第一頁只在客戶端載入，避免 SSR 與 hydration 資料不一致
+onMounted(loadMore)
+```
+
+第一頁的資料如果不夠填滿容器，就不會有 scroll 事件。這種情況元件會在資料變更後主動檢查一次，仍然接近底部就再發出 `reach-bottom`，父層不需要特別處理。
+
+失敗後 `reach-bottom` 仍處於閂鎖狀態（見第八節），使用者不離開底部就不會再觸發，所以要在 `footer` 或 `empty` slot 裡放一個呼叫 `loadMore` 的重試按鈕。
+
+### 組件懶加載（Nuxt）
+
+放在 layer 的 `app/components/` 裡的組件會被 Nuxt 自動註冊，加上 `Lazy` 前綴就會拆成獨立 chunk，第一次渲染時才下載：
+
+```vue
+<LazyVirtualScroll :items="messages" @reach-bottom="loadMore">
+  <template #default="{ item }"><LazyChatBubble :msg="item" /></template>
+</LazyVirtualScroll>
+```
+
+不需要手動 `import`。項目組件第一次載入時會先以 0 高度渲染，量測會略過 0 高度，chunk 載入完成後 ResizeObserver 才會記錄真實高度，所以不影響佈局。
 
 ### 三項需求的實作方式
 
@@ -75,6 +155,7 @@
 
 ### 注意事項
 
+- **容器必須有明確高度。** `height` 預設是 `100%`，父層沒有高度時等同 `auto`，容器會被 phantom 撐到和內容一樣高。結果是容器本身不會捲動（滾輪捲到的是整個頁面）、所有項目一次全部渲染、`reach-bottom` 也不會觸發。解法是傳入 `height`，或使用 flex 版面並在 VirtualScroll 上加 `flex: 1; min-height: 0`。開發模式下偵測到容器高度等於內容高度時，元件會在 console 印出警告。
 - **務必提供穩定的 `itemKey`。** 若退回使用 index 當 key，刪除或插入資料後，高度快取會對到錯誤的項目。
 - **項目之間的間距請用 padding，不要用 margin。** ResizeObserver 量的是 border-box，margin 不會被計入。
 - **整體版面寬度改變時（例如切換語系導致文字換行），請呼叫 `refresh(true)`。** 這是因為內容變化未必會改變已渲染項目的高度，舊的快取值可能已經不準。
@@ -124,6 +205,8 @@
 第二層 `.virtual-scroll__phantom` 是一個沒有內容、只有高度的元素，高度等於 `totalHeight`，讓瀏覽器以為裡面真的有一萬筆資料。捲軸長度、慣性捲動、手機回彈這些行為都由瀏覽器原生處理，元件不需要模擬。
 
 第三層 `.virtual-scroll__content` 以 absolute 疊在 phantom 頂端，只裝可視範圍內的項目，再用 `translate3d(0, offsetY, 0)` 推到正確位置。
+
+`footer` slot 放在 phantom 之後、同樣在捲動容器裡。它會增加 `scrollHeight`，所以捲到最底就看得到，但不在 `offsets` 裡，也不會影響任何項目的位置計算。
 
 定位用 transform，而不是 `padding-top` 或 `top`。原因是 transform 只影響合成層，不會觸發整個子樹重新排版；padding 每次變動都會讓瀏覽器重算 layout。捲動是每幀都在發生的事，這個差異在中低階手機上感受很明顯。`will-change: transform` 則是提示瀏覽器預先把這層提升為獨立圖層。
 
@@ -198,6 +281,8 @@ scroll handler 直接同步更新 `scrollTop.value`，沒有另外用 requestAni
 
 `reach-bottom` 用 `bottomEmitted` 旗標做閂鎖：進入底部閾值時只發一次，離開閾值後才重置。否則使用者在底部附近微微滑動，每個 scroll 事件都會觸發一次載入。資料變更時也會重置旗標，這樣載入更多資料、列表變長後，下次再捲到底才能再次觸發。
 
+判斷邏輯集中在 `checkBottom()`，有兩個呼叫點：scroll handler，以及資料變更後的 `nextTick`。第二個呼叫點是為了「資料不足以填滿容器」的情況：此時沒有可捲範圍，使用者也就無從觸發 scroll 事件，只靠 scroll handler 的話，無限載入會停在第一頁。資料變更後主動檢查一次，仍在底部就繼續發出 `reach-bottom`，直到資料填滿容器或父層回報沒有更多資料。
+
 ### 九、手機適配
 
 前面已提到 passive listener 和回彈夾值，其餘幾點如下：
@@ -205,20 +290,23 @@ scroll handler 直接同步更新 `scrollTop.value`，沒有另外用 requestAni
 - **`overscroll-behavior: contain`**：捲到底或頂時，捲動不會傳遞給 body。這避免了整頁跟著捲，也避免觸發 Android Chrome 的下拉刷新。
 - **`-webkit-overflow-scrolling: touch`**：舊版 iOS 需要這行才有慣性捲動，新版已是預設，留著無害。
 - **容器上的 ResizeObserver**：手機上容器高度變化很頻繁，例如螢幕旋轉、虛擬鍵盤彈出收起、iOS Safari 網址列伸縮。用 window resize 事件抓不到容器本身的變化，所以直接觀察容器。
-- **`height` 參數接受任意 CSS 值**：建議手機全螢幕列表用 `100dvh`，它會隨網址列伸縮動態調整，`100vh` 在 iOS 上則會被網址列遮住一截。
+- **`height` 參數接受任意 CSS 值**：建議手機全螢幕列表用 `100dvh`，它會隨網址列伸縮動態調整，`100vh` 在 iOS 上則會被網址列遮住一截。列表上方還有標題或工具列時，與其用 `calc(100dvh - 標題高度)`，不如讓外層以 `100dvh` 做 flex 版面、VirtualScroll 加上 `flex: 1; min-height: 0`，標題高度改變時不用跟著改數字。
 
 ### 十、數據變更
 
 watch 的 getter 回傳 `[props.items, props.items.length, props.itemKey]`，同時監聽三樣東西。只監聽 `props.items` 的話，父層用 `list.value.push(x)` 原地修改陣列時參考不變，watch 不會觸發；加上 length 就能涵蓋 push、pop、splice。剩下抓不到的只有「長度不變、原地替換某一項」這種情況，這時呼叫 `refresh()` 即可。沒有用 `deep: true`，因為深層監聽一萬筆物件的成本很高，而且項目內容變化造成的高度改變，ResizeObserver 本來就會處理。
 
-觸發後依序做四件事：
+觸發後依序做五件事：
 
 1. 重新產生 keys，並清掉已不存在項目的高度快取。
 2. 從頭重建 offsets。
 3. 重置 reach-bottom 閂鎖。
 4. 在 `nextTick` 從 DOM 同步 scrollTop。
+5. 同一個 `nextTick` 裡呼叫 `checkBottom()`。
 
 第四步的原因是：資料變少時，phantom 變矮，瀏覽器會自動把 scrollTop 夾小，但這個變化不保證會觸發 scroll 事件。不手動同步的話，元件內的 scrollTop 會停在舊值，算出空白的 range。
+
+第五步讓資料不足以填滿容器時，無限載入能繼續進行，原因見第八節。
 
 ### 十一、scrollToIndex 的修正迴圈
 
@@ -235,6 +323,7 @@ watch 的 getter 回傳 `[props.items, props.items.length, props.itemKey]`，同
 - **項目長什麼樣**：交給預設 slot，元件不給項目加任何視覺樣式，只在固定高度模式下設定高度。
 - **資料從哪來、怎麼載入更多**：交給父層監聽 `reach-bottom`，元件不知道 API、分頁或 loading 狀態。
 - **空狀態長什麼樣**：交給 `empty` slot，只提供一個預設文字。
+- **載入中、沒有更多、錯誤重試長什麼樣**：交給 `footer` slot。元件只提供一個位於列表尾端的位置，要顯示什麼、何時顯示都由父層依自己的 loading 狀態決定。
 - **型別**：用 `generic="T"` 讓 slot 的 `item` 自動推導型別，元件本身不假設資料結構，唯一的要求是能取得 key。
 
 這樣切分的好處是，同一個元件能用在聊天訊息、下注紀錄、遊戲大廳清單這些外觀完全不同的場景，而且每個場景的業務邏輯都不會滲進元件裡。
